@@ -1,8 +1,14 @@
-import postgres from 'postgres';
-import { config } from '../config';
+import postgres from "postgres";
+import { config } from "../config";
 
 const sql = postgres(config.DATABASE_URL);
 
+/**
+ * Thin Postgres provider used by the worker.
+ *
+ * Reads push tokens (source of truth lives in norbo-api) and deletes
+ * stale tokens reported by FCM (404/410 errors). No other writes.
+ */
 export const DbProvider = {
   async getTokensForUser(
     userId: string,
@@ -16,13 +22,6 @@ export const DbProvider = {
 
   async deleteToken(tokenId: string): Promise<void> {
     await sql`DELETE FROM push_tokens WHERE id = ${tokenId}`;
-  },
-
-  async getPingStatus(pingId: string): Promise<string | null> {
-    const rows = await sql<{ status: string }[]>`
-      SELECT status FROM pings WHERE id = ${pingId} LIMIT 1
-    `;
-    return rows[0]?.status ?? null;
   },
 
   async close(): Promise<void> {

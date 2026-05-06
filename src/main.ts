@@ -6,24 +6,22 @@ import { processNotifJob } from "./processor";
 import { DbProvider } from "./providers/db.provider";
 
 /**
- * dit-worker — BullMQ consumer for the `notif` queue.
+ * norbo-notifications-worker — BullMQ consumer for the `notif` queue.
  *
- * Processes notification jobs published by norbo-api and dit-ping:
- * - ping_in    → push notification to ping recipient
- * - dah_received → push notification to original ping sender
+ * Each job is a generic push notification request:
+ *   { userId, title, body, data?, sound?, category? }
  *
- * Push tokens are resolved from PostgreSQL (source of truth).
- * Stale tokens are deleted on FCM send failure.
+ * The worker resolves push tokens for `userId` from PostgreSQL, sends the
+ * FCM message via Firebase Admin, and prunes tokens that FCM no longer
+ * recognises. No business logic, no HTTP server.
  *
- * Graceful shutdown on SIGTERM/SIGINT (important for container health).
+ * Graceful shutdown on SIGTERM / SIGINT (important for container health).
  */
 
-// ── Redis connection ────────────────────────────────────────────────────
 const redis = new Redis(config.REDIS_URL, {
   maxRetriesPerRequest: null, // required by BullMQ
 });
 
-// ── BullMQ Worker ───────────────────────────────────────────────────────
 const worker = new Worker(
   "notif",
   async (job) => {
@@ -51,16 +49,15 @@ worker.on("error", (err) => {
 
 logger.info(
   { concurrency: config.WORKER_CONCURRENCY },
-  "dit-worker started — listening on notif queue",
+  "norbo-notifications-worker started — listening on notif queue",
 );
 
-// ── Graceful shutdown ───────────────────────────────────────────────────
 async function shutdown(signal: string): Promise<void> {
   logger.info({ signal }, "Shutting down gracefully...");
   await worker.close();
   await DbProvider.close();
   redis.disconnect();
-  logger.info("dit-worker stopped");
+  logger.info("norbo-notifications-worker stopped");
   process.exit(0);
 }
 

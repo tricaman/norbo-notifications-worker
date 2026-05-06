@@ -2,7 +2,7 @@ import "dotenv/config";
 import { z } from "zod/v4";
 
 /**
- * Zod schema for dit-worker environment variables.
+ * Zod schema for norbo-notifications-worker environment variables.
  * Validates at startup — fail fast on missing config.
  */
 const envSchema = z.object({

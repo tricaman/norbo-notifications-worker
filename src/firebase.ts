@@ -3,9 +3,8 @@ import { config } from "./config";
 import { logger } from "./logger";
 
 /**
- * Initialise Firebase Admin SDK from the service account JSON
- * environment variable. Exports the messaging instance for
- * sending push notifications.
+ * Initialise Firebase Admin SDK from the service account JSON env var.
+ * Exported `messaging` is the only handle the rest of the worker uses.
  */
 let app: admin.app.App;
 
@@ -26,71 +25,68 @@ try {
 
 export const messaging = app.messaging();
 
-/** Parameters for sending a push notification. */
+/** Parameters for sending a single push notification. */
 export interface SendParams {
   title: string;
   body: string;
-  sound: string;
   data: Record<string, string>;
-  category: string;
+  /** Optional sound name (without extension). Used for APNs. */
+  sound?: string;
+  /** Optional iOS notification category id. */
+  category?: string;
 }
+
+export type SendResult = "ok" | "invalid" | "error";
 
 /**
  * Send a push notification to a single device token.
- * Uses data-only payload for Android (Notifee renders the notification)
- * and APNs payload for iOS (sound + category support).
  *
- * Returns 'ok' on success, 'invalid' if the token should be deleted.
+ * Uses a data-only FCM payload so Notifee on the mobile side renders the
+ * notification (channel, icons, actions). APNs payload still carries
+ * `mutable-content`, sound and category for iOS.
+ *
+ * Returns `'invalid'` when the token must be deleted server-side (FCM
+ * indicated the token is no longer registered).
  */
 export async function sendToDevice(
   token: string,
   params: SendParams,
-): Promise<"ok" | "invalid" | "error"> {
+): Promise<SendResult> {
   try {
-    const payload = {
+    const apnsPayload: Record<string, unknown> = {
+      "mutable-content": 1,
+    };
+    if (params.sound) apnsPayload.sound = `${params.sound}.caf`;
+    if (params.category) apnsPayload.category = params.category;
+
+    const dataPayload: Record<string, string> = {
+      ...params.data,
+      notifee_title: params.title,
+      notifee_body: params.body,
+    };
+    if (params.sound) dataPayload.notifee_sound = params.sound;
+    if (params.category) dataPayload.notifee_category = params.category;
+
+    const payload: admin.messaging.Message = {
       token,
-      // DATA ONLY — Notifee handles display on Android
-      data: {
-        ...params.data,
-        notifee_title: params.title,
-        notifee_body: params.body,
-        notifee_sound: params.sound,
-        notifee_category: params.category,
-      },
+      data: dataPayload,
       android: {
-        priority: "high" as const,
-        ttl: 3600000, // 1 hour in ms
+        priority: "high",
+        ttl: 3_600_000,
       },
       apns: {
         headers: {
           "apns-priority": "10",
           "apns-push-type": "alert",
         },
-        payload: {
-          aps: {
-            "mutable-content": 1,
-            sound: `${params.sound}.caf`,
-            category: params.category,
-          },
-        },
+        payload: { aps: apnsPayload },
       },
     };
 
+    const messageId = await messaging.send(payload);
     logger.info(
-      {
-        token: token.slice(0, 20) + "...",
-        title: params.title,
-        body: params.body,
-        type: params.data.type,
-      },
-      "Sending FCM message",
-    );
-
-    const response = await messaging.send(payload);
-
-    logger.info(
-      { messageId: response, token: token.slice(0, 20) + "..." },
-      "FCM message sent successfully",
+      { messageId, token: token.slice(0, 20) + "..." },
+      "FCM message sent",
     );
     return "ok";
   } catch (err: unknown) {
@@ -99,7 +95,6 @@ export async function sendToDevice(
         ? (err as { code: string }).code
         : "unknown";
 
-    // Token is no longer valid — caller should delete it
     if (
       code === "messaging/registration-token-not-registered" ||
       code === "messaging/invalid-registration-token"
