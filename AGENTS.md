@@ -11,15 +11,20 @@ This worker owns: consuming the `notif` BullMQ queue, delivering FCM
 
 ## Hard constraints
 
-- No HTTP server. No business logic. No DB writes except `DELETE
-  push_tokens` on FCM 404/410 errors.
+- No HTTP server. No business logic. No DB writes except
+  `UPDATE push_tokens SET "invalidatedAt" = NOW()` on FCM 404/410
+  errors. Hard deletes are owned by norbo-api (logout flow).
 - Always data-only FCM messages. Never notification-type messages.
   Notifee renders client-side.
 - Validate every job with Zod **before** processing. Failed validation
   → log and discard (do not retry — payloads cannot self-heal).
 - On stale token (`messaging/registration-token-not-registered` or
-  `messaging/invalid-registration-token`): delete the row from
-  `push_tokens` and continue.
+  `messaging/invalid-registration-token`): soft-invalidate the row in
+  `push_tokens` (set `invalidatedAt = NOW()`) and continue. Never
+  hard-delete from this worker.
+- `getTokensForUser` filters out rows where `invalidatedAt IS NOT NULL`.
+  norbo-api is responsible for clearing `invalidatedAt` back to `NULL`
+  when a user re-registers the same token (e.g. on login).
 - English only: code, comments, logs, commit messages.
 
 ## Job contract

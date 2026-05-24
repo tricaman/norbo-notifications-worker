@@ -12,7 +12,8 @@ trigger: always_on
 
 Standalone BullMQ worker. No HTTP. Queue name from env `BULL_QUEUE_NAME`.
 
-- Single responsibility: consume job → validate → fetch tokens → send FCM/APNs → cleanup bad tokens.
+- Single responsibility: consume job → validate → fetch active tokens → send FCM/APNs → soft-invalidate stale tokens.
 - If you find yourself adding a DB read beyond push_tokens, it belongs in norbo-api or dit-ping.
+- The only DB write is `UPDATE push_tokens SET "invalidatedAt" = NOW()` on FCM 404/410. Never hard-delete.
 - Data-only FCM messages always. Notifee renders on the client side.
 - Zod validates every job payload at line 1 of processor. No exceptions.

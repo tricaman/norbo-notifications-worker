@@ -38,7 +38,7 @@ See `src/schema/job.schema.ts` for the canonical Zod schema.
 ```bash
 pnpm install
 cp .env.example .env  # fill FIREBASE_SERVICE_ACCOUNT_JSON
-pnpm start:dev        # tsx watch
+pnpm dev              # tsx watch
 ```
 
 The worker expects `push_tokens` rows in PostgreSQL with at least

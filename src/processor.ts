@@ -10,7 +10,7 @@ import { NotifJobSchema } from "./schema/job.schema";
  * 1. Validate payload via Zod (invalid → swallow, do not retry).
  * 2. Look up push tokens for the recipient in PostgreSQL.
  * 3. Forward title/body/data/category to FCM via Firebase Admin.
- * 4. Delete tokens that FCM reports as no longer registered.
+ * 4. Soft-invalidate tokens that FCM reports as no longer registered.
  *
  * The worker is domain-agnostic: it does not interpret `data` keys.
  * Producers decide rendering via Notifee on the mobile client.
@@ -50,9 +50,9 @@ export async function processNotifJob(job: Job): Promise<void> {
     if (send === "invalid") {
       recipientLogger.warn(
         { tokenId: token.id },
-        "Invalid token — deleting",
+        "Invalid token — invalidating",
       );
-      await DbProvider.deleteToken(token.id);
+      await DbProvider.invalidateToken(token.id);
     } else if (send === "ok") {
       sent++;
     }

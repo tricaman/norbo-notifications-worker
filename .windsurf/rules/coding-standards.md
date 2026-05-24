@@ -23,21 +23,21 @@ globs: "src/**/*.ts"
 
 ## BullMQ Processor
 
-- Validate payload with Zod schema at **line 1** of processor. Throw `ZodError` to fail immediately.
-- Never swallow errors inside processor. `throw` to let BullMQ manage retry.
-- Log structured data on every job: `{ jobId, recipientId, tokenCount, platform }`.
-- Return a typed result object from processor, never `void`.
+- Validate payload with Zod (`safeParse`) at the top of the processor. On failure: log `warn` with the issues and `return` — do **not** throw (payloads cannot self-heal, retries are wasted).
+- For all other errors (FCM transport, DB), `throw` to let BullMQ manage retry/backoff.
+- Log structured data on every job: child logger with `{ jobId }`, then `{ userId }` once resolved, and `{ sent, total }` on completion.
+- Processor returns `Promise<void>`. Observability lives in logs, not return values.
 
 ## DRY + Single Responsibility
 
 - FCM logic in `src/firebase.ts` only. Processor calls provider, never calls Firebase Admin SDK directly.
-- Token store queries in `src/token-store.ts` only. Two operations max: get tokens and remove token.
+- Push-token DB access in `src/providers/db.provider.ts` only. Two operations: `getTokensForUser` (active rows) and `invalidateToken` (soft-invalidate).
 - Token cleanup in provider, not in processor.
 
 ## Error Handling
 
-- FCM 404 → log warn + delete token + continue. Not an error worth retrying.
+- FCM 404 → log warn + soft-invalidate token + continue. Not an error worth retrying.
 - FCM 429 → throw to trigger BullMQ retry with backoff.
-- APNs 410 → log warn + delete token + continue.
+- APNs 410 → log warn + soft-invalidate token + continue.
 - All other errors → throw with context message, let BullMQ retry.
 - After 3 retries → BullMQ moves to DLQ. Do not implement custom DLQ logic.

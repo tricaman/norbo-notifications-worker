@@ -18,50 +18,54 @@ dit-worker is a standalone BullMQ consumer. No HTTP server. Single process.
 ```
 Redis (bull:notif:*) → BullMQ Worker → Processor → Firebase Admin SDK → FCM/APNs
                                            ↓
-                                      TokenStore (Redis) → cleanup stale tokens
+                                      DbProvider (Postgres) → soft-invalidate stale tokens
 ```
 
 ## Job Flow
 
 1. BullMQ dequeues job from `notif` queue.
-2. Processor validates payload with Zod schema (fail immediately on invalid).
-3. `TokenStore.getTokensForUser(recipientId)` fetches FCM tokens from Redis set `push_tokens:{userId}`.
-4. For each token: call `sendDataMessage(token, data)`.
-5. If FCM returns 404/410 (unregistered token): `TokenStore.removeToken(userId, token)`.
-6. Return typed result `{ sent: number, total: number }`.
+2. Processor validates payload with Zod schema (invalid → log and discard, do not retry).
+3. `DbProvider.getTokensForUser(userId)` fetches active rows from `push_tokens` where `"invalidatedAt" IS NULL`.
+4. For each token: call `sendToDevice(token, params)` (data-only FCM message).
+5. If FCM returns 404/410 (unregistered token): `DbProvider.invalidateToken(tokenId)` sets `"invalidatedAt" = NOW()`. Never hard-delete — that belongs to norbo-api's logout flow.
+6. Log `{ sent, total }` for observability.
 
 ## File Map
 
-| File | Responsibility |
-|------|---------------|
-| `src/main.ts` | BullMQ Worker bootstrap, graceful shutdown |
-| `src/config.ts` | Zod env validation, fail-fast |
-| `src/logger.ts` | Pino logger instance |
-| `src/processor.ts` | Job processing logic, Zod validation |
-| `src/firebase.ts` | Firebase Admin SDK init, `sendDataMessage()` |
-| `src/token-store.ts` | Redis-backed push token lookup and cleanup |
+| File                           | Responsibility                                        |
+| ------------------------------ | ----------------------------------------------------- |
+| `src/main.ts`                  | BullMQ Worker bootstrap, graceful shutdown            |
+| `src/config.ts`                | Zod env validation, fail-fast                         |
+| `src/logger.ts`                | Pino logger instance                                  |
+| `src/processor.ts`             | Job processing logic, Zod validation                  |
+| `src/firebase.ts`              | Firebase Admin SDK init, `sendToDevice()`             |
+| `src/providers/db.provider.ts` | Postgres-backed push token lookup and soft-invalidate |
+| `src/schema/job.schema.ts`     | Zod schema for `notif` job payload                    |
 
 ## Job Payload Contract
 
-Must match norbo-api `NotificationsService` and dit-ping `notif.Publisher` exactly:
+Canonical schema lives in `src/schema/job.schema.ts` (`NotifJobSchema`).
+The worker is domain-agnostic: the producer chooses title/body/data,
+the worker only resolves push tokens for `userId` and forwards.
 
 ```typescript
-interface PingNotifJobData {
-  pingId: string;
-  senderId: string;
-  recipientId: string;
-  senderName: string;
-  ttlSeconds: number;
-  createdAt: string; // ISO 8601
+interface NotifJobPayload {
+  userId: string; // recipient — used to look up tokens
+  title: string;
+  body?: string; // defaults to ""
+  sound?: string; // without extension; APNs only
+  category?: string; // iOS notification category id
+  data?: Record<string, string>; // forwarded as-is to FCM data payload
 }
 ```
 
-## Redis Keys (read/write)
+## External resources (read/write)
 
-| Pattern | Access | Purpose |
-|---------|--------|---------|
-| `push_tokens:{userId}` | READ + SREM | FCM token set, written by norbo-api |
-| `bull:notif:*` | BullMQ internal | Job queue — never access directly |
+| Resource                         | Access                                   | Purpose                                                       |
+| -------------------------------- | ---------------------------------------- | ------------------------------------------------------------- |
+| Postgres `push_tokens`           | READ active rows, UPDATE `invalidatedAt` | Token lookup + soft-invalidate. Source of truth in norbo-api. |
+| Redis `bull:<BULL_QUEUE_NAME>:*` | BullMQ internal                          | Job queue — never access directly                             |
+| FCM / APNs (Firebase Admin)      | WRITE (send)                             | Data-only message delivery                                    |
 
 ## Concurrency
 
